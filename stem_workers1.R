@@ -13,7 +13,7 @@ ui <- fluidPage(
         sidebarPanel(
             width = 2,
             selectInput("tspans", "Time spans",
-                        choices = c("1990-00-05-10"), # currently just once choice
+                        choices = c("1990-00-05-10","1990-00-10"),
                         selected = "1990-00-05-10",
                         multiple = FALSE),
             selectInput("grate", "Growth rate",
@@ -101,7 +101,7 @@ server <- function(input, output) {
         cat("\n")
         cat(subtitle)
         cat("\n")
-        ivreg_print(1, 1, dd)
+        ivreg_print(dd)
         return("")
     })
     get_subtitle <- function(){
@@ -205,6 +205,10 @@ server <- function(input, output) {
             ff <- dd[dd$span >= 2 & dd$span <= 4,]
             labyears <- "1990-2010"
         }
+        else if (input$tspans == "1990-00-10"){
+            ff <- dd[dd$span >= 2 & dd$span <= 3,]
+            labyears <- "1990-2010"
+        }
         else{
             cat(file = stderr(), paste0("ERROR: Unknown Time spans: ",input$tspans,"\n"))
         }
@@ -212,11 +216,17 @@ server <- function(input, output) {
             ff$nyrs <- 5 # 5 years
             ff$nyrs[ff$year==1980] <- 10 # 10 years
             ff$nyrs[ff$year==1990] <- 10 # 10 years
+            if (input$tspans == "1990-00-10"){
+                ff$nyrs[ff$year==2000] <- 10 # 10 years
+            }
         }
         else if (input$grate == "5-year growth"){
             ff$nyrs <- 1 # 5 years
             ff$nyrs[ff$year==1980] <- 2 # 10 years
             ff$nyrs[ff$year==1990] <- 2 # 10 years
+            if (input$tspans == "1990-00-10"){
+                ff$nyrs[ff$year==2000] <- 2 # 10 years
+            }
         }
         else if (input$grate == "Timespan growth"){
             ff$nyrs <- 1 # all timespans
@@ -278,9 +288,16 @@ server <- function(input, output) {
         cc$span[cc$year==1980] <- 1
         cc$span[cc$year==1990] <- 2
         cc$span[cc$year==2000] <- 3
-        cc$span[cc$year==2005] <- 4
-        cc$span[cc$year==2010] <- 5
-        cc$nyrs <- 1 # 5 years
+        if (input$tspans == "1990-00-10"){
+            cc <- cc[cc$year != 2005,] # remove 2005
+            cc$span[cc$year==2010] <- 4
+            cc$nyrs <- 1 # timespan
+        }
+        else{
+            cc$span[cc$year==2005] <- 4
+            cc$span[cc$year==2010] <- 5
+            cc$nyrs <- 1 # timespan
+        }
         
         dd <- cc[order(cc$metarea, cc$year),]
         dd <- dd[dd$panel1980 == 1,] # 219 common metareas
