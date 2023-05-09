@@ -15,7 +15,7 @@ ui <- fluidPage(
         sidebarPanel(
             width = 2,
             selectInput("tspans", "Time spans",
-                        choices = c("1990-00-05-10","1990-00-10"),
+                        choices = c("1990-00-05-10","1990-00-10","2000-05-10"),
                         selected = "1990-00-05-10",
                         multiple = FALSE),
             selectInput("grate", "Growth rate",
@@ -275,6 +275,10 @@ server <- function(input, output) {
         else if (input$tspans == "1990-00-10"){
             ff <- dd[dd$span >= 2 & dd$span <= 3,]
             labyears <- "1990-2010"
+        }
+        else if (input$tspans == "2000-05-10"){
+            ff <- dd[dd$span >= 3 & dd$span <= 4,]
+            labyears <- "2000-2010"
         }
         else{
             cat(file = stderr(), paste0("ERROR: Unknown Time spans: ",input$tspans,"\n"))
