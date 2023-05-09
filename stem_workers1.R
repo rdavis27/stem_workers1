@@ -73,21 +73,15 @@ server <- function(input, output) {
         dd$Sig[dd$Pvalue < 0.1] <- 1
         dd$Sig[dd$Pvalue < 0.05] <- 2
         dd$Sig[dd$Pvalue < 0.01] <- 3
-        dd$Significance <- as.factor(dd$Sig)
+        dd$Significance <- factor(dd$Sig, levels = c(0,1,2,3))
         gg <- ggplot(data=dd, aes_string(x="Label",y=input$yvar))
         gg <- gg + geom_point(data=dd ,aes_string(color="Significance",shape="Significance"), size=5, alpha=1.0)
-        isSig <- NULL
-        for (i in 0:3){
-            isSig <- c(isSig, any(dd$Sig == i))
-        }
-        zSig <<- isSig #DEBUG-RM
         vcolor <- unlist(strsplit(input$vcolor, ","))
-        vcolor <- vcolor[isSig]
-        gg <- gg + scale_fill_manual(values = vcolor) # Bar Plot
-        gg <- gg + scale_color_manual(values = vcolor) # Line Graph
+        #gg <- gg + scale_fill_manual(values = vcolor) # Bar Plot
+        #gg <- gg + scale_color_manual(values = vcolor) # Line Graph
+        gg <- gg + scale_discrete_manual(aesthetics = "color", values = vcolor, drop = FALSE)
         vshape <- as.numeric(unlist(strsplit(input$vshape, ",")))
-        vshape <- vshape[isSig]
-        gg <- gg + scale_shape_manual(values = vshape)
+        gg <- gg + scale_shape_manual(values = vshape, drop = FALSE)
         if (input$mark0){
             gg <- gg + geom_hline(yintercept=0, color="black")
         }
