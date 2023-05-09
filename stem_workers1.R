@@ -4,6 +4,8 @@ library("foreign")
 #library(AER)  # contains ivreg (old)
 library(ivreg) # contains ivreg
 library(plotly)
+library(lmtest) # contains coeftest
+library(sandwich) # contains vcovCL
 
 # Replace 'ui <- fluidPage('...')' with
 #       'shinyUI(fluidPage('...'))' if in separate ui.R file
@@ -21,6 +23,7 @@ ui <- fluidPage(
                         selected = "Timespan growth",
                         multiple = FALSE),
             checkboxInput("usemets","Use metareas",value = TRUE),
+            checkboxInput("clustermets","Cluster(metareas)",value = TRUE),
             checkboxInput("uselogs","Use logs",value = FALSE)
         ),
         mainPanel(
@@ -31,11 +34,11 @@ ui <- fluidPage(
                     sidebarPanel(
                         width = 2,
                         selectInput("yvar", "Y variable",
-                                    choices = c("pDiff","Pvalue","Slope"),
-                                    selected = "pDiff",
+                                    choices = c("Slope","Tvalue","Pvalue","d_Slope","d_Stderr"),
+                                    selected = "d_Slope",
                                     multiple = FALSE),
                         textInput("vcolor","Color",value = "black,blue2,orange2,red2"),
-                        textInput("vshape","Shape",value = "1,10,16,17"),
+                        textInput("vshape","Shape",value = "1,10,16,15"),
                         checkboxInput("mark0","Mark x-axis",value = TRUE)
                     ),
                     mainPanel(
@@ -54,6 +57,10 @@ ui <- fluidPage(
 # Replace 'server <- function(input, output) {'...'}' with
 #       'shinyServer(function(input, output) {'...'})' if in separate server.R file
 server <- function(input, output) {
+    slope  <- c(6.65,8.03,3.78,0.53,2.48,-5.17)
+    stderr <- c(4.53,3.03,1.75,0.56,4.69,4.20)
+    sig    <- c(0,   3,   2,   0,   0,   0)
+    tab5_1 <- data.frame(slope, stderr, sig)
     output$myUsage <- renderUI({
         includeHTML("http://econdataus.com/stem_workers1.htm")
     })
@@ -69,23 +76,29 @@ server <- function(input, output) {
         dd$Significance <- as.factor(dd$Sig)
         gg <- ggplot(data=dd, aes_string(x="Label",y=input$yvar))
         gg <- gg + geom_point(data=dd ,aes_string(color="Significance",shape="Significance"), size=5, alpha=1.0)
+        isSig <- NULL
+        for (i in 0:3){
+            isSig <- c(isSig, any(dd$Sig == i))
+        }
+        zSig <<- isSig #DEBUG-RM
         vcolor <- unlist(strsplit(input$vcolor, ","))
-        if (length(vcolor) > 1){
-            gg <- gg + scale_fill_manual(values = vcolor) # Bar Plot
-            gg <- gg + scale_color_manual(values = vcolor) # Line Graph
-        }
+        vcolor <- vcolor[isSig]
+        gg <- gg + scale_fill_manual(values = vcolor) # Bar Plot
+        gg <- gg + scale_color_manual(values = vcolor) # Line Graph
         vshape <- as.numeric(unlist(strsplit(input$vshape, ",")))
-        if (length(vshape) > 1){
-            gg <- gg + scale_shape_manual(values = vshape)
-        }
+        vshape <- vshape[isSig]
+        gg <- gg + scale_shape_manual(values = vshape)
         if (input$mark0){
             gg <- gg + geom_hline(yintercept=0, color="black")
         }
         gg <- gg + ggtitle(paste0("<b>The Effects of Foreign STEM on Native Wages and Employment</b><br>",
                            get_subtitle()))
         gg <- gg + xlab("Factor")
-        if (input$yvar == "pDiff"){
+        if (input$yvar == "d_Slope"){
             gg <- gg + ylab("% difference of Slope from Study")
+        }
+        else if (input$yvar == "d_Stderr"){
+            gg <- gg + ylab("% difference of Stderr from Study")
         }
         else{
             gg <- gg + ylab(input$yvar)
@@ -114,54 +127,114 @@ server <- function(input, output) {
         return(subtitle)
     }
     ivreg_print <- function(xx){
-        cat(" N  INTERCEPT     SLOPE    STUDY   % DIFF     S.E.   T-STAT  P-VALUE  DESCRIPTION\n")
-        cat("--  ---------  --------  -------  -------  -------  -------  -------  -----------------------------------\n")
+        cat("    CALCULATED VALUES                                    STUDY VALUES         % DIFFERENCES  DIFF\n")
+        cat("    ---------------------------------------------------  -------------------  -------------- ----\n")
+        cat(" N  INTERCEPT     SLOPE   STDERR   TVALUE   PVALUE  SIG   SLOPE  STDERR  SIG   SLOPE  STDERR  SIG  DESCRIPTION\n")
+        cat("--  ---------  --------  -------  -------  -------  ---  ------  ------  ---  ------  ------  ---  -----------\n")
         for (i in 1:NROW(xx)){
             vv <- xx[i,]
-            cat(sprintf("%2d  %9.4f %9.4f %8.4f %8.2f %8.3f %8.3f %8.3f  %s\n",
-                        i, vv$Intercept, vv$Slope, vv$Study, vv$pDiff,
-                        vv$SE, vv$Tstat, vv$Pvalue, vv$Description))
+            cat(sprintf("%2d  %9.4f %9.4f %8.3f %8.3f %8.3f %4d %7.2f %7.2f %4d %7.3f %7.3f %4d  %s\n",
+                        i, vv$Intercept, vv$Slope, vv$Stderr, vv$Tvalue, vv$Pvalue, vv$Sig,
+                        vv$s_Slope, vv$s_Stderr, vv$s_Sig,
+                        vv$d_Slope, vv$d_Stderr, vv$d_Sig, vv$Description))
         }
     }
-    save_mm <- function(vi, ivr, coef1, coef2, sum, study){
-        pdiff <- 100* (coef2 - study) / study
-        sum22 <- sum[2,2]
-        sum23 <- sum[2,3]
-        sum24 <- sum[2,4]
-        newrow <- data.frame(vi, coef1, coef2, study, pdiff, sum22, sum23, sum24)
+    save_mm <- function(ii, ivr, coef1, coef2, sum, study){
+        Intercept <- coef1
+        Slope     <- coef2
+        Stderr <- sum[2,2]
+        Tvalue <- sum[2,3]
+        Pvalue <- sum[2,4]
+        Sig <- 0
+        if (Pvalue < 0.10) Sig <- 1
+        if (Pvalue < 0.05) Sig <- 2
+        if (Pvalue < 0.01) Sig <- 3
+        s_Slope  <- study$slope[ii]
+        s_Stderr <- study$stderr[ii]
+        s_Sig    <- study$sig[ii]
+        d_Slope  <- 100* (Slope  - s_Slope)  / s_Slope
+        d_Stderr <- 100* (Stderr - s_Stderr) / s_Stderr
+        d_Sig    <- Sig - s_Sig
+        newrow <- data.frame(ii, Intercept, Slope, Stderr, Tvalue, Pvalue, Sig,
+                             s_Slope, s_Stderr, s_Sig, d_Slope, d_Stderr, d_Sig)
         ivr <- rbind(ivr, newrow)
     }
-    ivreg_all_save <- function(ff, ivr){
+    ivreg_mets_nocluster_save <- function(ff, ivr, study){ #without cluster(metarea)
         zff <<- ff #DEBUG-RM
-        met <- "OLS" # hardcode
-        mm <- ivreg(delta_native_stemO4_wkwage ~ delta_imm_stemO4 +fspan + fmets + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff, method = met)
-        ivr <- save_mm(1, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, 6.65)
-        mm <- ivreg(delta_native_coll_wkwage   ~ delta_imm_stemO4 +fspan + fmets + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff, method = met)
-        ivr <- save_mm(2, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, 8.03)
-        mm <- ivreg(delta_native_nocoll_wkwage ~ delta_imm_stemO4 +fspan + fmets + bartik_nocoll_wage + bartik_nocoll_emp | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff, method = met)
-        ivr <- save_mm(3, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, 3.78)
-        mm <- ivreg(delta_native_stemO4_emp    ~ delta_imm_stemO4 +fspan + fmets + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff, method = met)
-        ivr <- save_mm(4, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, 0.53)
-        mm <- ivreg(delta_native_coll_emp      ~ delta_imm_stemO4 +fspan + fmets + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff, method = met)
-        ivr <- save_mm(5, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, 2.48)
-        mm <- ivreg(delta_native_nocoll_emp    ~ delta_imm_stemO4 +fspan + fmets + bartik_nocoll_wage + bartik_nocoll_emp | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff, method = met)
-        ivr <- save_mm(6, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients,-5.17)
+        mm <- ivreg(delta_native_stemO4_wkwage ~ delta_imm_stemO4 +fspan + fmets + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        ivr <- save_mm(1, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, study)
+        mm <- ivreg(delta_native_coll_wkwage   ~ delta_imm_stemO4 +fspan + fmets + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        ivr <- save_mm(2, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, study)
+        mm <- ivreg(delta_native_nocoll_wkwage ~ delta_imm_stemO4 +fspan + fmets + bartik_nocoll_wage + bartik_nocoll_emp | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        ivr <- save_mm(3, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, study)
+        mm <- ivreg(delta_native_stemO4_emp    ~ delta_imm_stemO4 +fspan + fmets + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        ivr <- save_mm(4, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, study)
+        mm <- ivreg(delta_native_coll_emp      ~ delta_imm_stemO4 +fspan + fmets + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        ivr <- save_mm(5, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, study)
+        mm <- ivreg(delta_native_nocoll_emp    ~ delta_imm_stemO4 +fspan + fmets + bartik_nocoll_wage + bartik_nocoll_emp | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        ivr <- save_mm(6, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, study)
         return(ivr)
     }    
-    ivreg_nomets_save <- function(ff, ivr){
-        met <- "OLS" # hardcode
-        mm <- ivreg(delta_native_stemO4_wkwage ~ delta_imm_stemO4 +fspan + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff, method = met)
-        ivr <- save_mm(1, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, 6.65)
-        mm <- ivreg(delta_native_coll_wkwage   ~ delta_imm_stemO4 +fspan + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff, method = met)
-        ivr <- save_mm(2, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, 8.03)
-        mm <- ivreg(delta_native_nocoll_wkwage ~ delta_imm_stemO4 +fspan + bartik_nocoll_wage + bartik_nocoll_emp | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff, method = met)
-        ivr <- save_mm(3, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, 3.78)
-        mm <- ivreg(delta_native_stemO4_emp    ~ delta_imm_stemO4 +fspan + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff, method = met)
-        ivr <- save_mm(4, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, 0.53)
-        mm <- ivreg(delta_native_coll_emp      ~ delta_imm_stemO4 +fspan + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff, method = met)
-        ivr <- save_mm(5, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, 2.48)
-        mm <- ivreg(delta_native_nocoll_emp    ~ delta_imm_stemO4 +fspan + bartik_nocoll_wage + bartik_nocoll_emp | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff, method = met)
-        ivr <- save_mm(6, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients,-5.17)
+    ivreg_nomets_nocluster_save <- function(ff, ivr, study){ #without cluster(metarea) and metarea
+        zff <<- ff #DEBUG-RM
+        mm <- ivreg(delta_native_stemO4_wkwage ~ delta_imm_stemO4 +fspan + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        ivr <- save_mm(1, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, study)
+        mm <- ivreg(delta_native_coll_wkwage   ~ delta_imm_stemO4 +fspan + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        ivr <- save_mm(2, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, study)
+        mm <- ivreg(delta_native_nocoll_wkwage ~ delta_imm_stemO4 +fspan + bartik_nocoll_wage + bartik_nocoll_emp | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        ivr <- save_mm(3, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, study)
+        mm <- ivreg(delta_native_stemO4_emp    ~ delta_imm_stemO4 +fspan + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        ivr <- save_mm(4, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, study)
+        mm <- ivreg(delta_native_coll_emp      ~ delta_imm_stemO4 +fspan + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        ivr <- save_mm(5, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, study)
+        mm <- ivreg(delta_native_nocoll_emp    ~ delta_imm_stemO4 +fspan + bartik_nocoll_wage + bartik_nocoll_emp | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        ivr <- save_mm(6, ivr, mm$coefficients[1], mm$coefficients[2], summary(mm)$coefficients, study)
+    }    
+    ivreg_mets_cluster_save <- function(ff, ivr, study){ #with cluster(metarea) but without metarea
+        zff <<- ff #DEBUG-RM
+        mm <- ivreg(delta_native_stemO4_wkwage ~ delta_imm_stemO4 +fspan + fmets + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        tt <- coeftest(mm, vcov = vcovCL, cluster = ~metarea)
+        ivr <- save_mm(1, ivr, tt[1,1], tt[2,1], tt, study)
+        mm <- ivreg(delta_native_coll_wkwage   ~ delta_imm_stemO4 +fspan + fmets + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        tt <- coeftest(mm, vcov = vcovCL, cluster = ~metarea)
+        ivr <- save_mm(2, ivr, tt[1,1], tt[2,1], tt, study)
+        mm <- ivreg(delta_native_nocoll_wkwage ~ delta_imm_stemO4 +fspan + fmets + bartik_nocoll_wage + bartik_nocoll_emp | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        tt <- coeftest(mm, vcov = vcovCL, cluster = ~metarea)
+        zmm3 <<- mm #DEBUG-RM
+        ztt3 <<- tt #DEBUG-RM
+        ivr <- save_mm(3, ivr, tt[1,1], tt[2,1], tt, study)
+        mm <- ivreg(delta_native_stemO4_emp    ~ delta_imm_stemO4 +fspan + fmets + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        tt <- coeftest(mm, vcov = vcovCL, cluster = ~metarea)
+        ivr <- save_mm(4, ivr, tt[1,1], tt[2,1], tt, study)
+        mm <- ivreg(delta_native_coll_emp      ~ delta_imm_stemO4 +fspan + fmets + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        tt <- coeftest(mm, vcov = vcovCL, cluster = ~metarea)
+        ivr <- save_mm(5, ivr, tt[1,1], tt[2,1], tt, study)
+        mm <- ivreg(delta_native_nocoll_emp    ~ delta_imm_stemO4 +fspan + fmets + bartik_nocoll_wage + bartik_nocoll_emp | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        tt <- coeftest(mm, vcov = vcovCL, cluster = ~metarea)
+        ivr <- save_mm(6, ivr, tt[1,1], tt[2,1], tt, study)
+        return(ivr)
+    }    
+    ivreg_nomets_cluster_save <- function(ff, ivr, study){ #with cluster(metarea) and metarea
+        zff <<- ff #DEBUG-RM
+        mm <- ivreg(delta_native_stemO4_wkwage ~ delta_imm_stemO4 +fspan + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        tt <- coeftest(mm, vcov = vcovCL, cluster = ~metarea)
+        ivr <- save_mm(1, ivr, tt[1,1], tt[2,1], tt, study)
+        mm <- ivreg(delta_native_coll_wkwage   ~ delta_imm_stemO4 +fspan + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        tt <- coeftest(mm, vcov = vcovCL, cluster = ~metarea)
+        ivr <- save_mm(2, ivr, tt[1,1], tt[2,1], tt, study)
+        mm <- ivreg(delta_native_nocoll_wkwage ~ delta_imm_stemO4 +fspan + bartik_nocoll_wage + bartik_nocoll_emp | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        tt <- coeftest(mm, vcov = vcovCL, cluster = ~metarea)
+        ivr <- save_mm(3, ivr, tt[1,1], tt[2,1], tt, study)
+        mm <- ivreg(delta_native_stemO4_emp    ~ delta_imm_stemO4 +fspan + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        tt <- coeftest(mm, vcov = vcovCL, cluster = ~metarea)
+        ivr <- save_mm(4, ivr, tt[1,1], tt[2,1], tt, study)
+        mm <- ivreg(delta_native_coll_emp      ~ delta_imm_stemO4 +fspan + bartik_coll_wage   + bartik_coll_emp   | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        tt <- coeftest(mm, vcov = vcovCL, cluster = ~metarea)
+        ivr <- save_mm(5, ivr, tt[1,1], tt[2,1], tt, study)
+        mm <- ivreg(delta_native_nocoll_emp    ~ delta_imm_stemO4 +fspan + bartik_nocoll_wage + bartik_nocoll_emp | . + delta_imm_stemO4_H1B_hat80 - delta_imm_stemO4, data=ff)
+        tt <- coeftest(mm, vcov = vcovCL, cluster = ~metarea)
+        ivr <- save_mm(6, ivr, tt[1,1], tt[2,1], tt, study)
+        return(ivr)
     }    
     adjust_xy <- function(df){
         df$delta_native_stemO4_wkwage <- (1 + df$diff_native_stemO4_wkwage / df$nat_stemO4_wkwage) ^ (1 / df$nyrs) - 1
@@ -259,15 +332,28 @@ server <- function(input, output) {
         sum23 <- numeric(0)
         sum24 <- numeric(0)
         ivr <- data.frame(vi, coef1, coef2, study, pdiff, sum22, sum23, sum24)
+        study <- tab5_1
         if (input$usemets){
-            ivr <- ivreg_all_save(ff, ivr)
+            if (input$clustermets){
+                ivr <- ivreg_mets_cluster_save(ff, ivr, study)
+            }
+            else{
+                ivr <- ivreg_mets_nocluster_save(ff, ivr, study)
+            }
         }
         else{
-            ivr <- ivreg_nomets_save(ff, ivr)
+            if (input$clustermets){
+                ivr <- ivreg_nomets_cluster_save(ff, ivr, study)
+            }
+            else{
+                ivr <- ivreg_nomets_nocluster_save(ff, ivr, study)
+            }
         }
+        zivr <<- ivr #DEBUG-RM
         xx <- ivr[,c(-1)]
         rownames(xx) <- seq(1,6)
-        colnames(xx) <- c("Intercept","Slope","Study","pDiff","SE","Tstat","Pvalue")
+        colnames(xx) <- c("Intercept","Slope","Stderr","Tvalue","Pvalue","Sig",
+                          "s_Slope","s_Stderr","s_Sig","d_Slope","d_Stderr","d_Sig")
         xx$Description <- c("Weekly Wage, Native STEM",
                             "Weekly Wage, Native College-Educated",
                             "Weekly Wage, Native Non-College-Educated",
