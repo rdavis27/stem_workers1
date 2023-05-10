@@ -121,13 +121,13 @@ server <- function(input, output) {
         return(subtitle)
     }
     ivreg_print <- function(xx){
-        cat("    CALCULATED VALUES                                    STUDY VALUES         % DIFFERENCES  DIFF\n")
-        cat("    ---------------------------------------------------  -------------------  -------------- ----\n")
-        cat(" N  INTERCEPT     SLOPE   STDERR   TVALUE   PVALUE  SIG   SLOPE  STDERR  SIG   SLOPE  STDERR  SIG  DESCRIPTION\n")
-        cat("--  ---------  --------  -------  -------  -------  ---  ------  ------  ---  ------  ------  ---  -----------\n")
+        cat("    CALCULATED VALUES                                    STUDY VALUES          % DIFFERENCES   DIFF\n")
+        cat("    ---------------------------------------------------  -------------------  ---------------- ----\n")
+        cat(" N  INTERCEPT     SLOPE   STDERR   TVALUE   PVALUE  SIG   SLOPE  STDERR  SIG    SLOPE   STDERR  SIG  DESCRIPTION\n")
+        cat("--  ---------  --------  -------  -------  -------  ---  ------  ------  ---  -------  -------  ---  -----------\n")
         for (i in 1:NROW(xx)){
             vv <- xx[i,]
-            cat(sprintf("%2d  %9.4f %9.4f %8.3f %8.3f %8.3f %4d %7.2f %7.2f %4d %7.3f %7.3f %4d  %s\n",
+            cat(sprintf("%2d  %9.4f %9.4f %8.3f %8.3f %8.3f %4d %7.2f %7.2f %4d %8.3f %8.3f %4d  %s\n",
                         i, vv$Intercept, vv$Slope, vv$Stderr, vv$Tvalue, vv$Pvalue, vv$Sig,
                         vv$s_Slope, vv$s_Stderr, vv$s_Sig,
                         vv$d_Slope, vv$d_Stderr, vv$d_Sig, vv$Description))
